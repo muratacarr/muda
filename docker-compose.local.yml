@@ -1,0 +1,6 @@
+# Local smoke test without Cloudflare:
+#   docker compose -f docker-compose.yml -f docker-compose.local.yml up --build api bot web
+# Then open http://127.0.0.1:8080 (bound to loopback only).
+services:
+  web:
+    ports: ["127.0.0.1:8080:8080"]

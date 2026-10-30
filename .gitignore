@@ -1,0 +1,12 @@
+/docs/interview/
+.env
+*.db
+*.db-wal
+*.db-shm
+__pycache__/
+.venv/
+node_modules/
+dist/
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/

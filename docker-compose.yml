@@ -1,0 +1,90 @@
+# Muda - Raspberry Pi 5 (linux/arm64). Secrets come from .env (never committed); see .env.example.
+# Only `cloudflared` talks to the internet inbound-side: nothing publishes a host port.
+name: muda
+
+x-hardening: &hardening
+  restart: unless-stopped
+  read_only: true
+  tmpfs: [/tmp]
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+
+services:
+  api:
+    <<: *hardening
+    build: ./backend
+    command: ["api"]
+    environment:
+      PREVIEW_SECRET: ${PREVIEW_SECRET:?set PREVIEW_SECRET (>= 32 chars)}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?set PUBLIC_BASE_URL}
+      PREVIEW_TTL_MINUTES: ${PREVIEW_TTL_MINUTES:-30}
+      DATABASE_URL: sqlite:////data/muda.db
+    volumes: [muda-data:/data]
+    networks: [private]  # internal network: the API has no route to the internet
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  bot:
+    <<: *hardening
+    build: ./backend
+    command: ["bot"]
+    depends_on:
+      api: { condition: service_healthy }  # api runs the migrations first
+    environment:
+      PREVIEW_SECRET: ${PREVIEW_SECRET}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL}
+      PREVIEW_TTL_MINUTES: ${PREVIEW_TTL_MINUTES:-30}
+      DATABASE_URL: sqlite:////data/muda.db
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?set TELEGRAM_BOT_TOKEN}
+      TELEGRAM_ALLOWED_USER_ID: ${TELEGRAM_ALLOWED_USER_ID:?set TELEGRAM_ALLOWED_USER_ID}
+      AI_PROVIDER: deepseek
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:?set DEEPSEEK_API_KEY}
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-flash}
+      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
+      AI_MONTHLY_BUDGET_USD: ${AI_MONTHLY_BUDGET_USD:-1}
+    volumes: [muda-data:/data]
+    networks: [egress]  # outbound only (Telegram + DeepSeek long polling)
+
+  web:
+    <<: *hardening
+    build: ./frontend
+    # No `depends_on: api`: the static site must stay up even if the API or the bot fails.
+    networks: [edge, private]
+    tmpfs: [/tmp, /var/cache/nginx, /run]
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest  # pin to a digest after the first successful pull
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:?set TUNNEL_TOKEN}
+    depends_on: [web]
+    networks: [edge]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+
+  # One-off: `docker compose --profile tools run --rm backup`
+  backup:
+    build: ./backend
+    command: ["backup"]
+    profiles: [tools]
+    environment:
+      DATABASE_URL: sqlite:////data/muda.db
+      BACKUP_KEEP: ${BACKUP_KEEP:-14}
+    volumes: [muda-data:/data]
+    network_mode: none
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+
+volumes:
+  muda-data:
+
+networks:
+  private:
+    internal: true
+  edge: {}
+  egress: {}
